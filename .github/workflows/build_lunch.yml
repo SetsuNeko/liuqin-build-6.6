@@ -80,58 +80,55 @@ jobs:
           git config --global user.email "github-actions@github.com"
 
       - name: Init LineageOS and install local manifests
-  run: |
-    mkdir -p "$GITHUB_WORKSPACE/lineage"
-    cd "$GITHUB_WORKSPACE/lineage"
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/lineage"
+          cd "$GITHUB_WORKSPACE/lineage"
 
-    repo init -u https://github.com/LineageOS/android.git \
-      -b "${{ inputs.los_branch }}" --depth=1
+          repo init -u https://github.com/LineageOS/android.git \
+            -b "${{ inputs.los_branch }}" --depth=1
 
-    mkdir -p .repo/local_manifests
+          mkdir -p .repo/local_manifests
 
-    # 1) 复制本仓库自带的 sm8450 manifest
-    if [ -f "$GITHUB_WORKSPACE/build-manifest/sm8450-manifest.xml" ]; then
-      cp -v "$GITHUB_WORKSPACE/build-manifest/sm8450-manifest.xml" \
-            .repo/local_manifests/xiaomi_sm8450_6.6.xml
-    else
-      echo "警告：build-manifest 里没找到 sm8450-manifest.xml，复制所有 xml 兜底"
-      find "$GITHUB_WORKSPACE/build-manifest" -maxdepth 2 -name "*.xml" \
-        -exec cp -v {} .repo/local_manifests/ \;
-    fi
+          if [ -f "$GITHUB_WORKSPACE/build-manifest/sm8450-manifest.xml" ]; then
+            cp -v "$GITHUB_WORKSPACE/build-manifest/sm8450-manifest.xml" \
+                  .repo/local_manifests/xiaomi_sm8450_6.6.xml
+          else
+            echo "警告：build-manifest 里没找到 sm8450-manifest.xml，复制所有 xml 兜底"
+            find "$GITHUB_WORKSPACE/build-manifest" -maxdepth 2 -name "*.xml" \
+              -exec cp -v {} .repo/local_manifests/ \;
+          fi
 
-    # 2) 额外补 liuqin 设备树（不带 <remote>，复用官方 github remote）
-    cat > .repo/local_manifests/liuqin_extra.xml << 'EOF'
-    <?xml version="1.0" encoding="UTF-8"?>
-    <manifest>
-      <project name="Xiaomi-SM8475/android_device_xiaomi_liuqin"
-               path="device/xiaomi/liuqin"
-               remote="github"
-               revision="vauxite" />
-    </manifest>
-    EOF
+          cat > .repo/local_manifests/liuqin_extra.xml << 'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <manifest>
+            <project name="Xiaomi-SM8475/android_device_xiaomi_liuqin"
+                     path="device/xiaomi/liuqin"
+                     remote="github"
+                     revision="vauxite" />
+          </manifest>
+          EOF
 
-    sed -i "s/revision=\"vauxite\"/revision=\"${{ inputs.liuqin_dt_ref }}\"/" \
-          .repo/local_manifests/liuqin_extra.xml
-    sed -i "s#Xiaomi-SM8475/android_device_xiaomi_liuqin#${{ inputs.liuqin_dt_repo }}#" \
-          .repo/local_manifests/liuqin_extra.xml
+          sed -i "s/revision=\"vauxite\"/revision=\"${{ inputs.liuqin_dt_ref }}\"/" \
+                .repo/local_manifests/liuqin_extra.xml
+          sed -i "s#Xiaomi-SM8475/android_device_xiaomi_liuqin#${{ inputs.liuqin_dt_repo }}#" \
+                .repo/local_manifests/liuqin_extra.xml
 
-    # 3) 暴力清理：删除所有 local manifest 里的 <remote> 定义
-    echo "== 清理前，各 local manifest 里的 remote 行 =="
-    grep -rn '<remote' .repo/local_manifests/ || echo "（没有找到 remote 行）"
+          echo "== 清理前，各 local manifest 里的 remote 行 =="
+          grep -rn '<remote' .repo/local_manifests/ || echo "（没有找到 remote 行）"
 
-    find .repo/local_manifests -name '*.xml' -exec sed -i '/<remote/d' {} \;
+          find .repo/local_manifests -name '*.xml' -exec sed -i '/<remote/d' {} \;
 
-    echo "== 清理后，各 local manifest 里的 remote 行 =="
-    grep -rn '<remote' .repo/local_manifests/ || echo "（已全部清除）"
+          echo "== 清理后，各 local manifest 里的 remote 行 =="
+          grep -rn '<remote' .repo/local_manifests/ || echo "（已全部清除）"
 
-    echo "== local_manifests 文件列表 =="
-    ls -la .repo/local_manifests
+          echo "== local_manifests 文件列表 =="
+          ls -la .repo/local_manifests
 
-    echo "== 各 local manifest 内容（排查用） =="
-    for f in .repo/local_manifests/*.xml; do
-      echo "----- $f -----"
-      cat "$f"
-    done
+          echo "== 各 local manifest 内容（排查用） =="
+          for f in .repo/local_manifests/*.xml; do
+            echo "----- $f -----"
+            cat "$f"
+          done
 
       - name: Repo sync
         run: |
