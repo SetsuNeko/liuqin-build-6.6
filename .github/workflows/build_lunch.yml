@@ -89,7 +89,6 @@ jobs:
 
           mkdir -p .repo/local_manifests
 
-          # 1) 复制本仓库自带的 sm8450 manifest（README 指定安装为 xiaomi_sm8450_6.6.xml）
           if [ -f "$GITHUB_WORKSPACE/build-manifest/sm8450-manifest.xml" ]; then
             cp -v "$GITHUB_WORKSPACE/build-manifest/sm8450-manifest.xml" \
                   .repo/local_manifests/xiaomi_sm8450_6.6.xml
@@ -99,11 +98,10 @@ jobs:
               -exec cp -v {} .repo/local_manifests/ \;
           fi
 
-          # 2) 额外补 liuqin 设备树（官方 manifest 不含 liuqin）
+          # 复用官方已有 github remote，不再自定义 <remote>
           cat > .repo/local_manifests/liuqin_extra.xml << 'EOF'
           <?xml version="1.0" encoding="UTF-8"?>
           <manifest>
-            <remote name="github" fetch="https://github.com" />
             <project name="Xiaomi-SM8475/android_device_xiaomi_liuqin"
                      path="device/xiaomi/liuqin"
                      remote="github"
@@ -120,6 +118,9 @@ jobs:
           ls -la .repo/local_manifests
           echo "== liuqin_extra.xml =="
           cat .repo/local_manifests/liuqin_extra.xml
+
+          echo "== 合并后 remote 列表（排查用） =="
+          repo manifest 2>/dev/null | grep -o '<remote[^>]*>' | sort -u || true
 
       - name: Repo sync
         run: |
