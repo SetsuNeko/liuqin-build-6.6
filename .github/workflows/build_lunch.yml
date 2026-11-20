@@ -1,0 +1,208 @@
+name: Build liuqin 6.6 Kernel + BakaSU
+
+on:
+  workflow_dispatch:
+    inputs:
+      los_branch:
+        description: "LineageOS 分支"
+        required: true
+        default: "lineage-24.0"
+      device:
+        description: "设备代号"
+        required: true
+        default: "liuqin"
+      kernel_dir:
+        description: "内核源码目录，相对 LineageOS 根目录（不存在会自动探测）"
+        required: true
+        default: "kernel/xiaomi/sm8475"
+      bakasu_ref:
+        description: "BakaSU 分支/tag"
+        required: true
+        default: "main"
+      liuqin_dt_repo:
+        description: "liuqin 设备树仓库"
+        required: true
+        default: "Xiaomi-SM8475/android_device_xiaomi_liuqin"
+      liuqin_dt_ref:
+        description: "liuqin 设备树分支/tag"
+        required: true
+        default: "vauxite"
+      targets:
+        description: "编译目标（空格分隔）"
+        required: true
+        default: "bacon"
+
+env:
+  USE_CCACHE: "1"
+  CCACHE_DIR: /home/runner/.ccache
+  CCACHE_MAXSIZE: 10G
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout build manifest repo
+        uses: actions/checkout@v4
+        with:
+          path: build-manifest
+
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison build-essential ccache curl flex g++-multilib gcc-multilib \
+            git git-lfs gnupg gperf imagemagick lib32readline-dev lib32z1-dev \
+            libelf-dev liblz4-tool libsdl1.2-dev libssl-dev libxml2 libxml2-utils \
+            lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev \
+            python3 python-is-python3
+
+      - name: Setup repo
+        run: |
+          mkdir -p ~/bin
+          curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+          chmod a+x ~/bin/repo
+          echo "$HOME/bin" >> $GITHUB_PATH
+
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@github.com"
+
+      - name: Init LineageOS and install local manifests
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/lineage"
+          cd "$GITHUB_WORKSPACE/lineage"
+
+          repo init -u https://github.com/LineageOS/android.git \
+            -b "${{ inputs.los_branch }}" --depth=1
+
+          mkdir -p .repo/local_manifests
+
+          # 1) 复制本仓库自带的 sm8450 manifest（README 指定安装为 xiaomi_sm8450_6.6.xml）
+          if [ -f "$GITHUB_WORKSPACE/build-manifest/sm8450-manifest.xml" ]; then
+            cp -v "$GITHUB_WORKSPACE/build-manifest/sm8450-manifest.xml" \
+                  .repo/local_manifests/xiaomi_sm8450_6.6.xml
+          else
+            echo "警告：build-manifest 里没找到 sm8450-manifest.xml，复制所有 xml 兜底"
+            find "$GITHUB_WORKSPACE/build-manifest" -maxdepth 2 -name "*.xml" \
+              -exec cp -v {} .repo/local_manifests/ \;
+          fi
+
+          # 2) 额外补 liuqin 设备树（官方 manifest 不含 liuqin）
+          cat > .repo/local_manifests/liuqin_extra.xml << 'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <manifest>
+            <remote name="github" fetch="https://github.com" />
+            <project name="Xiaomi-SM8475/android_device_xiaomi_liuqin"
+                     path="device/xiaomi/liuqin"
+                     remote="github"
+                     revision="vauxite" />
+          </manifest>
+          EOF
+
+          sed -i "s/revision=\"vauxite\"/revision=\"${{ inputs.liuqin_dt_ref }}\"/" \
+                .repo/local_manifests/liuqin_extra.xml
+          sed -i "s#Xiaomi-SM8475/android_device_xiaomi_liuqin#${{ inputs.liuqin_dt_repo }}#" \
+                .repo/local_manifests/liuqin_extra.xml
+
+          echo "== local_manifests =="
+          ls -la .repo/local_manifests
+          echo "== liuqin_extra.xml =="
+          cat .repo/local_manifests/liuqin_extra.xml
+
+      - name: Repo sync
+        run: |
+          cd "$GITHUB_WORKSPACE/lineage"
+          repo sync -c -j"$(nproc)" --force-sync --no-clone-bundle --no-tags
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ inputs.los_branch }}-${{ inputs.device }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ inputs.los_branch }}-${{ inputs.device }}-
+
+      - name: Init ccache
+        run: ccache -M "$CCACHE_MAXSIZE" && ccache -s
+
+      - name: Integrate BakaSU
+        run: |
+          cd "$GITHUB_WORKSPACE/lineage"
+
+          KERNEL_DIR="${{ inputs.kernel_dir }}"
+
+          if [ ! -f "$KERNEL_DIR/Makefile" ]; then
+            echo "指定内核目录无效：$KERNEL_DIR，尝试自动探测..."
+            for candidate in \
+              "kernel/platform/kernel-6.6" \
+              "kernel/xiaomi/sm8475" \
+              "kernel/xiaomi/sm8450" \
+              "kernel/xiaomi/sm7475"; do
+              if [ -f "$candidate/Makefile" ]; then
+                KERNEL_DIR="$candidate"
+                echo "自动选择内核目录：$KERNEL_DIR"
+                break
+              fi
+            done
+          fi
+
+          if [ ! -f "$KERNEL_DIR/Makefile" ]; then
+            echo "找不到内核目录（无顶层 Makefile）。kernel 下现有 Makefile："
+            find kernel -maxdepth 4 -name Makefile 2>/dev/null | head -30 || true
+            echo "kernel 下目录结构："
+            find kernel -maxdepth 3 -type d 2>/dev/null | sort | head -40 || true
+            exit 1
+          fi
+
+          cd "$KERNEL_DIR"
+          echo "== 当前内核目录：$(pwd) =="
+
+          curl -LSs "https://raw.githubusercontent.com/Baka-SU/BakaSU/main/kernel/setup.sh" | bash -s "${{ inputs.bakasu_ref }}" || exit 1
+
+          echo "== BakaSU 集成后检查 =="
+          find . -maxdepth 3 \( -iname "*kernelsu*" -o -iname "*bakasu*" \) | head -20
+
+      - name: Build
+        run: |
+          cd "$GITHUB_WORKSPACE/lineage"
+          source build/envsetup.sh
+          breakfast "${{ inputs.device }}"
+          m ${{ inputs.targets }}
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          PRODUCT_OUT="$GITHUB_WORKSPACE/lineage/out/target/product/${{ inputs.device }}"
+
+          if [ ! -d "$PRODUCT_OUT" ]; then
+            echo "产物目录不存在：$PRODUCT_OUT"
+            find out/target/product -maxdepth 1 -type d 2>/dev/null || true
+            exit 1
+          fi
+
+          find "$PRODUCT_OUT" -maxdepth 1 -type f \
+            \( -name '*.zip' -o -name 'boot*.img' -o -name 'vendor_boot*.img' \
+               -o -name 'dtbo*.img' -o -name 'recovery*.img' \) \
+            -exec cp -v {} "$GITHUB_WORKSPACE/out/" \;
+
+          echo "== 收集到的产物 =="
+          ls -lh "$GITHUB_WORKSPACE/out"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: liuqin-6.6-bakasu-${{ github.run_number }}
+          path: $GITHUB_WORKSPACE/out/*
+          if-no-files-found: error
